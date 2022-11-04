@@ -1,0 +1,46 @@
+on:
+  push:
+    # Sequence of patterns matched against refs/tags
+    tags:
+      - 'v*' # Push events to matching v*, i.e. v1.0, v20.15.10
+
+name: Create Release
+
+jobs:
+  build:
+    name: Create Release
+    if: github.repository == 'cilium/pwru'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@93ea575cb5d8a053eaa0ac8fa3b40d7e05a33cc8
+
+      - name: Set up Go
+        uses: actions/setup-go@c4a742cab115ed795e34d4513e2cf7d472deb55f
+        with:
+          go-version: 1.18
+
+      - name: Generate the artifacts
+        run: make release
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@0cb9c9b65d5d1901c1f53e5e66eaf4afd303e70e
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # This token is provided by Actions, you do not need to create your own token
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          draft: true # turn this to false once release notes are automatically added
+          prerelease: false
+          body: |
+            Note for maintainers:: Please update the description with the actual release notes (see RELEASE.md for instructions).
+
+      - name: Upload the artifacts
+        id: upload-release-artifacts
+        uses: skx/github-action-publish-binaries@b9ca5643b2f1d7371a6cba7f35333f1461bbc703
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          releaseId: ${{ steps.create_release.outputs.id }}
+          args: 'release/*'

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright (C) 2020-2021 Martynas Pumputis */
-/* Copyright (C) 2021 Authors of Cilium */
+/* Copyright (C) 2021-2022 Authors of Cilium */
 
 package main
 
@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -16,6 +17,7 @@ import (
 
 	pb "github.com/cheggaaa/pb/v3"
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/perf"
 	flag "github.com/spf13/pflag"
@@ -34,6 +36,11 @@ func main() {
 	flags.SetFlags()
 	flag.Parse()
 
+	if flags.ShowVersion {
+		fmt.Printf("pwru %s\n", pwru.Version)
+		os.Exit(0)
+	}
+
 	if err := unix.Setrlimit(unix.RLIMIT_NOFILE, &unix.Rlimit{
 		Cur: 4096,
 		Max: 4096,
@@ -50,21 +57,49 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	funcs, err := pwru.GetFuncs(flags.FilterFunc)
+	var btfSpec *btf.Spec
+	var err error
+	if flags.KernelBTF != "" {
+		btfSpec, err = btf.LoadSpec(flags.KernelBTF)
+	} else {
+		btfSpec, err = btf.LoadKernelSpec()
+	}
+	if err != nil {
+		log.Fatalf("Failed to load BTF spec: %s", err)
+	}
+
+	if flags.AllKMods {
+		files, err := os.ReadDir("/sys/kernel/btf")
+		if err != nil {
+			log.Fatalf("Failed to read directory: %s", err)
+		}
+
+		flags.KMods = nil
+		for _, file := range files {
+			if !file.IsDir() && file.Name() != "vmlinux" {
+				flags.KMods = append(flags.KMods, file.Name())
+			}
+		}
+	}
+
+	funcs, err := pwru.GetFuncs(flags.FilterFunc, btfSpec, flags.KMods)
 	if err != nil {
 		log.Fatalf("Failed to get skb-accepting functions: %s", err)
 	}
 	if len(funcs) <= 0 {
 		log.Fatalf("Cannot find a matching kernel function")
 	}
-	addr2name, err := pwru.GetAddrs(funcs, flags.OutputStack)
+	addr2name, err := pwru.GetAddrs(funcs, flags.OutputStack || len(flags.KMods) != 0)
 	if err != nil {
 		log.Fatalf("Failed to get function addrs: %s", err)
 	}
 
+	var opts ebpf.CollectionOptions
+	opts.Programs.KernelTypes = btfSpec
+
 	if flags.OutputSkb {
 		objs := KProbePWRUObjects{}
-		if err := LoadKProbePWRUObjects(&objs, nil); err != nil {
+		if err := LoadKProbePWRUObjects(&objs, &opts); err != nil {
 			log.Fatalf("Loading objects: %v", err)
 		}
 		defer objs.Close()
@@ -79,7 +114,7 @@ func main() {
 		printStackMap = objs.PrintStackMap
 	} else {
 		objs := KProbePWRUWithoutOutputSKBObjects{}
-		if err := LoadKProbePWRUWithoutOutputSKBObjects(&objs, nil); err != nil {
+		if err := LoadKProbePWRUWithoutOutputSKBObjects(&objs, &opts); err != nil {
 			log.Fatalf("Loading objects: %v", err)
 		}
 		defer objs.Close()
@@ -93,7 +128,27 @@ func main() {
 		printStackMap = objs.PrintStackMap
 	}
 
+	log.Printf("Per cpu buffer size: %d bytes\n", flags.PerCPUBuffer)
 	pwru.ConfigBPFMap(&flags, cfgMap)
+
+	var kprobes []link.Link
+	defer func() {
+		select {
+		case <-ctx.Done():
+			log.Println("Detaching kprobes...")
+			bar := pb.StartNew(len(kprobes))
+			for _, kp := range kprobes {
+				_ = kp.Close()
+				bar.Increment()
+			}
+			bar.Finish()
+
+		default:
+			for _, kp := range kprobes {
+				_ = kp.Close()
+			}
+		}
+	}()
 
 	log.Println("Attaching kprobes...")
 	ignored := 0
@@ -121,7 +176,7 @@ func main() {
 		default:
 		}
 
-		kp, err := link.Kprobe(name, fn)
+		kp, err := link.Kprobe(name, fn, nil)
 		bar.Increment()
 		if err != nil {
 			if !errors.Is(err, os.ErrNotExist) {
@@ -130,13 +185,13 @@ func main() {
 				ignored += 1
 			}
 		} else {
-			defer kp.Close()
+			kprobes = append(kprobes, kp)
 		}
 	}
 	bar.Finish()
 	log.Printf("Attached (ignored %d)\n", ignored)
 
-	rd, err := perf.NewReader(events, os.Getpagesize())
+	rd, err := perf.NewReader(events, flags.PerCPUBuffer)
 	if err != nil {
 		log.Fatalf("Creating perf event reader: %s", err)
 	}
@@ -169,7 +224,7 @@ func main() {
 	for i := flags.OutputLimitLines; i > 0 || runForever; i-- {
 		record, err := rd.Read()
 		if err != nil {
-			if perf.IsClosed(err) {
+			if errors.Is(err, perf.ErrClosed) {
 				return
 			}
 			log.Printf("Reading from perf event reader: %s", err)

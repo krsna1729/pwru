@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright (C) 2020-2021 Martynas Pumputis */
-/* Copyright (C) 2021 Authors of Cilium */
+/* Copyright (C) 2021-2022 Authors of Cilium */
 
 package pwru
 
 import (
+	"os"
+
 	flag "github.com/spf13/pflag"
 )
 
@@ -13,6 +15,10 @@ const (
 )
 
 type Flags struct {
+	ShowVersion bool
+
+	KernelBTF string
+
 	FilterNetns   uint32
 	FilterMark    uint32
 	FilterFunc    string
@@ -22,15 +28,23 @@ type Flags struct {
 	FilterSrcPort uint16
 	FilterDstPort uint16
 
-	OutputRelativeTS bool
+	OutputTS         string
 	OutputMeta       bool
 	OutputTuple      bool
 	OutputSkb        bool
 	OutputStack      bool
 	OutputLimitLines uint64
+
+	PerCPUBuffer int
+	KMods        []string
+	AllKMods     bool
 }
 
 func (f *Flags) SetFlags() {
+	flag.BoolVar(&f.ShowVersion, "version", false, "show pwru version and exit")
+	flag.StringVar(&f.KernelBTF, "kernel-btf", "", "specify kernel BTF file")
+	flag.StringSliceVar(&f.KMods, "kmods", nil, "list of kernel modules names to attach to")
+	flag.BoolVar(&f.AllKMods, "all-kmods", false, "attach to all available kernel modules")
 	flag.StringVar(&f.FilterFunc, "filter-func", "", "filter kernel functions to be probed by name (exact match, supports RE2 regular expression)")
 	flag.StringVar(&f.FilterProto, "filter-proto", "", "filter L4 protocol (tcp, udp, icmp, icmp6)")
 	flag.StringVar(&f.FilterSrcIP, "filter-src-ip", "", "filter source IP addr")
@@ -39,12 +53,13 @@ func (f *Flags) SetFlags() {
 	flag.Uint32Var(&f.FilterMark, "filter-mark", 0, "filter skb mark")
 	flag.Uint16Var(&f.FilterSrcPort, "filter-src-port", 0, "filter source port")
 	flag.Uint16Var(&f.FilterDstPort, "filter-dst-port", 0, "filter destination port")
-	flag.BoolVar(&f.OutputRelativeTS, "output-relative-timestamp", false, "print relative timestamp per skb")
+	flag.StringVar(&f.OutputTS, "timestamp", "none", "print timestamp per skb (\"current\", \"relative\", \"none\")")
 	flag.BoolVar(&f.OutputMeta, "output-meta", false, "print skb metadata")
 	flag.BoolVar(&f.OutputTuple, "output-tuple", false, "print L4 tuple")
 	flag.BoolVar(&f.OutputSkb, "output-skb", false, "print skb")
 	flag.BoolVar(&f.OutputStack, "output-stack", false, "print stack")
 	flag.Uint64Var(&f.OutputLimitLines, "output-limit-lines", 0, "exit the program after the number of events has been received/printed")
+	flag.IntVar(&f.PerCPUBuffer, "per-cpu-buffer", os.Getpagesize(), "per CPU buffer in bytes")
 }
 
 type Tuple struct {
@@ -77,9 +92,9 @@ type Event struct {
 	Addr         uint64
 	SAddr        uint64
 	Timestamp    uint64
-	CPU          uint32
 	PrintSkbId   uint64
 	Meta         Meta
 	Tuple        Tuple
 	PrintStackId int64
+	CPU          uint32
 }

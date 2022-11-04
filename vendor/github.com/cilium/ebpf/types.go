@@ -1,17 +1,18 @@
 package ebpf
 
 import (
-	"github.com/cilium/ebpf/pkg/unix"
+	"github.com/cilium/ebpf/internal/sys"
+	"github.com/cilium/ebpf/internal/unix"
 )
 
-//go:generate stringer -output types_string.go -type=MapType,ProgramType,AttachType,PinType
+//go:generate stringer -output types_string.go -type=MapType,ProgramType,PinType
 
 // MapType indicates the type map structure
 // that will be initialized in the kernel.
 type MapType uint32
 
 // Max returns the latest supported MapType.
-func (_ MapType) Max() MapType {
+func (MapType) Max() MapType {
 	return maxMapType - 1
 }
 
@@ -90,9 +91,9 @@ const (
 	SkStorage
 	// DevMapHash - Hash-based indexing scheme for references to network devices.
 	DevMapHash
-	// StructOps - This map holds a kernel struct with its function pointer implemented in a BPF
+	// StructOpsMap - This map holds a kernel struct with its function pointer implemented in a BPF
 	// program.
-	StructOpts
+	StructOpsMap
 	// RingBuf - Similar to PerfEventArray, but shared across all CPUs.
 	RingBuf
 	// InodeStorage - Specialized local storage map for inodes.
@@ -120,8 +121,24 @@ func (mt MapType) canStoreProgram() bool {
 	return mt == ProgramArray
 }
 
+// hasBTF returns true if the map type supports BTF key/value metadata.
+func (mt MapType) hasBTF() bool {
+	switch mt {
+	case PerfEventArray, CGroupArray, StackTrace, ArrayOfMaps, HashOfMaps, DevMap,
+		DevMapHash, CPUMap, XSKMap, SockMap, SockHash, Queue, Stack, RingBuf:
+		return false
+	default:
+		return true
+	}
+}
+
 // ProgramType of the eBPF program
 type ProgramType uint32
+
+// Max return the latest supported ProgramType.
+func (ProgramType) Max() ProgramType {
+	return maxProgramType - 1
+}
 
 // eBPF program types
 const (
@@ -156,12 +173,16 @@ const (
 	Extension
 	LSM
 	SkLookup
+	Syscall
+	maxProgramType
 )
 
 // AttachType of the eBPF program, needed to differentiate allowed context accesses in
 // some newer program types like CGroupSockAddr. Should be set to AttachNone if not required.
 // Will cause invalid argument (EINVAL) at program load time if set incorrectly.
 type AttachType uint32
+
+//go:generate stringer -type AttachType -trimprefix Attach
 
 // AttachNone is an alias for AttachCGroupInetIngress for readability reasons.
 const AttachNone AttachType = 0
@@ -205,6 +226,11 @@ const (
 	AttachXDPCPUMap
 	AttachSkLookup
 	AttachXDP
+	AttachSkSKBVerdict
+	AttachSkReuseportSelect
+	AttachSkReuseportSelectOrMigrate
+	AttachPerfEvent
+	AttachTraceKprobeMulti
 )
 
 // AttachFlags of the eBPF program used in BPF_PROG_ATTACH command
@@ -258,3 +284,20 @@ type BatchOptions struct {
 	ElemFlags uint64
 	Flags     uint64
 }
+
+// LogLevel controls the verbosity of the kernel's eBPF program verifier.
+// These constants can be used for the ProgramOptions.LogLevel field.
+type LogLevel = sys.LogLevel
+
+const (
+	// Print verifier state at branch points.
+	LogLevelBranch = sys.BPF_LOG_LEVEL1
+
+	// Print verifier state for every instruction.
+	// Available since Linux v5.2.
+	LogLevelInstruction = sys.BPF_LOG_LEVEL2
+
+	// Print verifier errors and stats at the end of the verification process.
+	// Available since Linux v5.2.
+	LogLevelStats = sys.BPF_LOG_STATS
+)

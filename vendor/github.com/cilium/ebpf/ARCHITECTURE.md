@@ -28,7 +28,7 @@ The BPF Type Format describes more than just the types used by a BPF program. It
 includes debug aids like which source line corresponds to which instructions and
 what global variables are used.
 
-[BTF parsing](pkg/btf/) lives in a separate pkg package since exposing
+[BTF parsing](internal/btf/) lives in a separate internal package since exposing
 it would mean an additional maintenance burden, and because the API still
 has sharp corners. The most important concept is the `btf.Type` interface, which
 also describes things that aren't really types like `.rodata` or `.bss` sections.
@@ -78,3 +78,9 @@ tend to use bpf_link to do so. Older hooks unfortunately use a combination of
 syscalls, netlink messages, etc. Adding support for a new link type should not
 pull in large dependencies like netlink, so XDP programs or tracepoints are
 out of scope.
+
+Each bpf_link_type has one corresponding Go type, e.g. `link.tracing` corresponds
+to BPF_LINK_TRACING. In general, these types should be unexported as long as they
+don't export methods outside of the Link interface. Each Go type may have multiple
+exported constructors. For example `AttachTracing` and `AttachLSM` create a
+tracing link, but are distinct functions since they may require different arguments.
